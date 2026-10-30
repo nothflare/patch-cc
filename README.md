@@ -147,6 +147,19 @@ new build cannot honour — or open `patch-cc`, whose header reads **pending
 apply** until you do. The startup name and the `--version` marker are visible
 tells too.
 
+To have `claude update` apply for you, add patch-cc's shell function to your
+shell's startup file. It is plain POSIX sh, so zsh, bash, dash and ksh take it
+on macOS and Linux alike:
+
+```bash
+uvx --no-cache patch-cc hook >> ~/.zshrc     # or ~/.bashrc
+```
+
+In a new shell, `claude update` runs as before, then `uvx patch-cc@latest
+apply` follows whenever it installed a new build. The background auto-update
+does not pass through your shell, so for those the header and the tells above
+still apply.
+
 ## Why native-only, and what the write does
 
 Claude Code ships only as a Bun single-file executable; the npm package is a

@@ -1,5 +1,5 @@
-"""The commands: ``apply`` and ``restore`` for users, ``doctor`` and ``extract``
-for whoever maintains the patches. Bare ``patch-cc`` is the menu.
+"""The commands: ``apply``, ``restore`` and ``hook`` for users, ``doctor`` and
+``extract`` for whoever maintains the patches. Bare ``patch-cc`` is the menu.
 
 ``apply`` has one input, the saved selection, and the menu is its editor:
 nothing on the command line changes what it bakes, so the same ``apply``
@@ -268,6 +268,36 @@ def cmd_restore(args) -> int:
     return 0
 
 
+#: The shell function `hook` prints: `claude update` as itself, then `apply`
+#: when it installed a new build. Plain POSIX sh, so one text serves zsh, bash,
+#: dash and ksh on macOS and Linux, and a function rather than an alias, so
+#: arguments and exit status pass through untouched. A new build is told by
+#: ``--version`` changing, never by the words the update prints: those are
+#: upstream's to reword, and reading them meant piping the update away from the
+#: terminal. The body is a subshell so ``before`` stays its own without
+#: ``local``, which POSIX does not define. ``@latest``, because a new Claude
+#: build is exactly when an older patch-cc may not know its shapes.
+_HOOK = """\
+# patch-cc: after `claude update` installs a new build, re-apply the patches.
+claude() (
+  case $1 in
+    update | upgrade)
+      before=$(command claude --version 2>/dev/null)
+      command claude "$@" || exit
+      [ "$(command claude --version 2>/dev/null)" = "$before" ] ||
+        uvx patch-cc@latest apply
+      ;;
+    *) command claude "$@" ;;
+  esac
+)
+"""
+
+
+def cmd_hook(args) -> int:
+    sys.stdout.write(_HOOK)
+    return 0
+
+
 def cmd_extract(args) -> int:
     from .bun import container
 
@@ -299,6 +329,7 @@ Run with no arguments to open the menu: pick patches, configure them, apply.
   patch-cc apply           bake the saved selection into the installed binary
                            (after a Claude update, this is all you need)
   patch-cc restore         put the original binary back from backup
+  patch-cc hook            print a shell function that applies after `claude update`
 
 maintenance:
   patch-cc doctor [PATH]   check every patch against a clean build, bake and boot it
@@ -327,6 +358,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "restore", help="restore the original binary from backup"
     ).set_defaults(func=cmd_restore)
+    sub.add_parser(
+        "hook",
+        help="print a shell function that applies after `claude update`",
+        description="Print a POSIX shell function for your shell's startup file "
+        "(zsh, bash, dash, ksh): `claude update` runs as itself, then "
+        "`uvx patch-cc@latest apply` when it installed a new build.",
+    ).set_defaults(func=cmd_hook)
 
     p_doctor = sub.add_parser(
         "doctor", help="check every patch still matches a build (maintenance)"
