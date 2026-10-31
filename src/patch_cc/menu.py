@@ -44,6 +44,8 @@ from .patches import (
     ALL_PATCHES,
     DEFAULT_BRAND,
     DEFAULT_SUFFIX,
+    FOLD_NEVER,
+    FOLDS,
     GROUP_ORDER,
     Options,
     Patch,
@@ -108,6 +110,7 @@ def _hints(*pairs: tuple[str, str]) -> Text:
 #: left off this list with its hint reading "enter toggle".
 _CONFIGURABLE = {patch.id for patch in ALL_PATCHES if patch.setting is not None}
 
+
 #: Where `?` sends you from the custom-models submenu: the README section that
 #: explains endpoints, keys, windows and ladders. One home for the address.
 _CUSTOM_MODELS_HELP = "https://github.com/anfreire/patch-cc#custom-models"
@@ -166,6 +169,8 @@ class MenuModel:
     #: Custom models submenu, seeded and saved exactly like every other choice here.
     custom_models: list[CustomModel] = field(default_factory=list)
     endpoint: str = ""
+    #: Whether an inline thinking block folds once off screen (`thinking-inline`).
+    inline_fold: str = FOLD_NEVER
     pending_key: str | None = field(default=None, repr=False)
     #: Why the saved selection was passed over at seed time, if it was -- shown
     #: once when the menu opens, since the next apply overwrites that file.
@@ -194,6 +199,7 @@ class MenuModel:
         model.custom_models = list(seed.options.custom_models)
         model.endpoint = seed.options.endpoint
         model.pins = dict(seed.options.subagent_models)
+        model.inline_fold = seed.options.inline_fold
         for group in GROUP_ORDER:
             for patch in by_group().get(group, []):
                 # A patch this build has no surface for gets no row at all: what
@@ -276,6 +282,7 @@ class MenuModel:
             subagent_models=dict(self.pins),
             custom_models=list(self.custom_models),
             endpoint=self.endpoint,
+            inline_fold=self.inline_fold,
         )
         rows = [pid for pid, row in self.patch_rows.items() if row.on]
         return cache.Selection([*rows, *self.kept_patches], options)
@@ -315,11 +322,14 @@ class PickModal:
         hint: Text | None = None,
         width: int = 46,
         description: Text | None = None,
+        note: Callable[[str], Text | None] | None = None,
     ) -> None:
         self.title = title
         self.description = description
         self.items = items
         self.label = label
+        #: A note drawn at an item's right edge, as the main list draws a row's.
+        self.note = note
         self.on_pick = on_pick
         self.shortcuts = shortcuts or {}
         self.hint = (
@@ -365,6 +375,10 @@ class PickModal:
             line = Text()
             line.append("❯ " if current else "  ", style=_ACCENT)
             line.append_text(self.label(item, current))
+            note = self.note(item) if self.note is not None else None
+            if note is not None:
+                line.append(" " * max(2, inner - line.cell_len - note.cell_len))
+                line.append_text(note)
             line.truncate(inner, overflow="ellipsis")
             body.append_text(line)
             body.append("\n")
@@ -831,6 +845,8 @@ class MenuApp:
             self._open_text_modal(text_keys[patch_id])
         elif patch_id == "custom-models":
             self._open_custom_menu(row)  # submenu: pick models / set endpoint URL
+        elif patch_id == "thinking-inline":
+            self._open_fold_modal(row)
         else:
             row.on = not row.on
 
@@ -922,6 +938,34 @@ class MenuApp:
                 label,
                 current=custom.aliases(self.model.custom_models).get(current, current),
                 width=46,
+            ),
+            picked,
+        )
+
+    def _open_fold_modal(self, row: PatchRow) -> None:
+        def label(value: str, _selected: bool) -> Text:
+            return Text(FOLDS[value])
+
+        def note(value: str) -> Text | None:
+            # The fold rides the fullscreen transcript removing rows that
+            # scroll away; the classic renderer keeps every row open.
+            if value == FOLD_NEVER:
+                return None
+            return Text("(requires fullscreen renderer)", style="dim")
+
+        def picked(choice: object) -> None:
+            if isinstance(choice, str):
+                self.model.inline_fold = choice
+                row.on = True
+
+        self._push(
+            PickModal(
+                "Fold thinking",
+                list(FOLDS),
+                label,
+                current=self.model.inline_fold,
+                width=70,
+                note=note,
             ),
             picked,
         )
@@ -1859,6 +1903,8 @@ class MenuApp:
         if row.patch.id == "org-label":
             value = model.text_rows["org"].value
             return Text(value, style=_VALUE) if value else Text("hidden", style="dim")
+        if row.patch.id == "thinking-inline":
+            return Text(FOLDS[model.inline_fold], style=_VALUE)
         if row.patch.id == "custom-models":
             count = len(model.custom_models)
             if not count:

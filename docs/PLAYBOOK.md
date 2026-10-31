@@ -832,7 +832,7 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   clamps at request time exactly as an interactive `/effort max` does today.
 
 - **`thinking-inline`** — make historical thinking blocks render inline.
-  Three required rewrites:
+  Four required rewrites:
 
   - **`group-routing`** — the activity-group builder swallows a finished
     thinking message into the collapsed "✻ … (thought for Ns)" group, so it
@@ -851,6 +851,16 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
     head or guards it as a statement of its own. 2.1.232 extracted the summary
     into two helper calls and split the `if`: anything that models the arm body
     dies there.
+  - **`group-time`** — the same arm accounts the block's think-time into the
+    open group, `<group>.thoughtForMs += <time>`, just before the block would
+    have joined it. Routed out, the block is not the group's to time: left
+    standing, the tool group before a block read "Thought for 58s" for
+    thinking drawn on its own row beside it. The sum is replaced by its time
+    alone — still worked out, for `fold-note` to note under the block — so the
+    group's own "Thought for" goes with the thinking it no longer holds. The
+    sum is found on its own, as the bundle's one `+=` into `thoughtForMs`, not
+    through the arm `group-routing` identifies: a step answers for its own
+    identity ([Expectations](#expectations--why-a-green-tick-means-something)).
   - **`null-guard`** — the early return that hides thinking outside transcript
     mode: an `if` keyed on the very flag the arm hands its renderer as
     `isTranscriptMode`, whose branch answers `return null`. Both minifier forms
@@ -869,6 +879,137 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
     `case"thinking":` arm that carries them. Presentation is a set of
     properties, never a call shape — of a bag being handed over, never one
     being taken apart, for the reason `tool-calls` gives above.
+
+  Its setting (`inline_fold`, the menu's `enter`) is `never` — open for good,
+  as it always was, and the default, so a replay bakes what it baked before —
+  or one of two auto folds, which fold a block as soon as newer content has
+  pushed its row out of the last screen and it is off the screen:
+  `thought-time` to `∴ Thought for 12s`,
+  `first-line` to the start of the block itself. Then `renderer-props` leaves
+  the arm's own flag standing and draws the bag through a **fold gate**
+  instead of forcing `!0`: a class component, one per renderer, that hands the
+  renderer `(<the arm's own flag>||!<left>)`, so the real transcript view still
+  draws a block whole. A class, because it needs nothing from React but the
+  class contract React has kept since its first release — a prototype marked
+  `isReactComponent`, the `updater` React gives every instance, the
+  `contextType` it reads a context through — where a hook would mean spelling
+  a minified `useState`. The arm's call is read from its bag outwards: the
+  factory and component it is handed to are the call's own, spliced back as
+  they are. Five more required steps note, watch, fold and reopen it:
+
+  - **`fold-note`** — upstream's "Thought for Ns" lives in no block: the
+    grouping arm accounts it from message timestamps, and `group-time` keeps
+    that time out of the group. It is noted under the block's signature
+    instead — upstream's own figure, cap and all. The same note says how old
+    the block is: one from before this session (`Date.parse(timestamp)` against
+    the process's own `performance.timeOrigin`) — a resumed one — is noted as
+    having left the screen already, so it opens folded, as a tool group does,
+    and only thinking that arrives while you watch starts open. The block is
+    the message the sum's own block reads `timestamp` off — the message being
+    timed, the same object the arm goes on to route: one binding however often
+    it is read, spliced only where it means the same at the sum
+    (`source.portable`). So this step needs nothing `group-routing` found.
+
+  - **`fold-frames`** — the gate learns that the screen changed from
+    upstream itself: Ink calls `subscribeFrames` listeners after every frame it
+    draws, a scroll included, and its own visible-rows hook rides exactly that.
+    The subscription is on the app context, which lives in Ink's module, not
+    the renderer's, so it is noted beside the fold where it is named: the one
+    assignment of `"InternalAppContext"` to a `displayName`, whose context's
+    default value carries `subscribeFrames` (both asked). Each frame, a gate
+    whose block has a signature and has not left asks whether its row has, by
+    upstream's own test: the row's top summed up to the content of the nearest
+    box that scrolls (`overflowY: "scroll"`), against the offset that box last
+    drew (`scrollTopRendered`) and its height. Left is two things at once:
+    wholly off the screen, and wholly above the **last screen**, the bottom
+    screenful of the content (its height less the box's), which is what the
+    screen shows at the bottom. So what folds a block is newer content pushing
+    it up and out, never scrolling away from the end: a block on the last
+    screen stays open however far up you scroll, and one on screen stays open
+    wherever it is. What it cannot measure — no layout yet, no scrolling box,
+    as in the classic renderer — has not left. It is the row on the screen
+    that counts, not the transcript's mounted window: that window runs 60–80
+    rows past each edge, so asking it folded a block a screen late.
+
+    A block folding above the screen takes rows from above what is on it, and
+    the transcript holds its view through that only on upstream's own terms,
+    which the fold keeps. Its anchor step scrolls by however far the row at
+    the top of the view moved, but it skips a scroll still easing in
+    (`pendingScrollDelta`) or jumping to an element (`scrollAnchor`), and it
+    measures against the anchor it took at the last commit, which may be the
+    very block now off the screen. So the gate waits for a settled frame, then
+    folds in two commits: the first draws nothing new and lets the transcript
+    re-anchor on the row now at the top (every commit has Ink measure and call
+    its layout listeners, before React runs `componentDidUpdate`); the second,
+    from `componentDidUpdate`, notes the block as left and draws it folded,
+    and the anchor step scrolls by the rows it took before the frame is drawn.
+    Without the wait, a page-down past a 7-line block moved 27 rows where
+    every other page moved 21.
+
+    A frame can miss a row. Output that lands in one update — a 150-line
+    reply arriving whole — pushes a block past the mounted window in the same
+    update that unloads it, so no frame ever draws it off the screen, and it
+    came back open. So a gate being unmounted notes where its row sat, and
+    once that update has been laid out (a microtask: Ink lays out inside the
+    commit) asks whether the row left for good. The scroll box must still
+    reach Ink's root through its parents — Ink clears a removed node's
+    `parentNode` — since a box taken down with everything in it is another
+    screen, ctrl+o's or a dialog's, and says nothing about the row. Then the
+    row must be pushed out of the last screen and off the screen the box now
+    scrolls to: the last screen itself while it sticks to the bottom, its own
+    offset plus any scroll still easing in otherwise, and not while it jumps
+    to an element. Folding an unloaded row moves nothing on screen, so this
+    needs no settled frame.
+
+  Two more teach the thinking renderer, found on its own rather than through
+  the arm `renderer-props` identifies: of the functions that take both a
+  `param` and the `isTranscriptMode` flag (ten on 2.1.314), the one that
+  then takes `thinking` apart from a value that can be that `param`'s binding:
+
+  - **`fold-ref`** — the row's box, the bag the renderer hands its
+    `marginTop` to, takes the ref the gate hands the renderer (`__ccFoldRef`,
+    bound in the same pattern that takes `param` apart, first so a rest
+    element stays last), so the gate can measure the row. The block's
+    `signature` is what the note keys on, because every finished thinking
+    block carries one and no live block does — each live update is a row of
+    its own, removed as the next arrives, and is never watched — and because a
+    block is re-read from the transcript as often as it is drawn, so its
+    object is no identity. A box that already has a ref is upstream's, and is
+    reported found and left.
+  - **`fold-line`** — the collapsed text, the italic bag whose `children`
+    read the block's `thinking` (each name in them followed to the values
+    written to it, `Source.values`, and into the calls they are handed to), is
+    kept to one line with
+    `wrap:"truncate-end"`, the way upstream draws its other one-line dim text.
+    For `first-line` that is the whole edit: upstream's own collapsed thinking
+    is the block's text run together, so its one line is the block's start.
+    For `thought-time` the text says how long it was thought for instead —
+    `∴ Thought for 12s`, whole seconds as upstream's spinner words it, or
+    `∴ Thought` with no time noted, read off the block by the name the
+    renderer takes `thinking` off it with, and only where that name means the
+    block at the text (`source.portable`). The glyph is the renderer's own, so
+    a folded block reads apart from the tool groups around it.
+  - **`fold-click`** — a click expands a folded block, the way it expands a
+    folded tool call, on upstream's own path: the transcript list is handed
+    `onItemClick` (toggle the row's key in an expanded set),
+    `isItemExpanded` and `isItemClickable`, and draws an expanded row
+    `verbose` — which the thinking renderer draws whole. Only the clickable
+    test needs teaching: the value handed as `isItemClickable` (the bag
+    *passed*, never the list's own pattern) becomes upstream's test *or* a
+    thinking message whose block has left the screen. A thinking block is
+    its own message, keyed for expansion by its own uuid (the key is a tool
+    id only for tool calls), so the click opens that block alone; a second
+    click folds it again. An open or live block is not clickable, so a stray
+    click cannot leave one expanded before it ever folds.
+
+  **Alive by eye** (fullscreen): a block stays open, markdown and all, while
+  any line of its row is on screen. Push it off the top with a long reply and
+  scroll back one page: it is `∴ Thought for Ns`, or its first line. Scroll up
+  until the last screen's block is below the screen, come back down, and it is
+  still open. Click a folded one and it opens; click again and it folds.
+  `ctrl+o` and back folds nothing that was on screen. The classic renderer has
+  no scrolling box to measure against, so there it stays open. Watched on
+  2.1.316.
 
   The component itself has no gate — an empty summary renders nothing, which is
   why trivially short thinks may still show no block.

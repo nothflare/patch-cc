@@ -18,6 +18,10 @@ All three rewrites are therefore marked *required*: any one of them going
 absent is a regression, not a build variant, and `doctor` reports it as such
 instead of staying green on the other two.
 
+Its fold (``inline_fold``) keeps a block open while its row is on screen or on
+the last screen, and draws it as one line once newer content has pushed the
+row out of both.
+
 Rendering is only half of it. A fourth gate is not in the UI at all: the
 account's server-side experiment bucket, which decides whether the API puts any
 text in the thinking blocks it returns. `thinking-summaries` is that half, and
@@ -34,7 +38,17 @@ from collections.abc import Callable
 from .. import js
 from ..custom_models import EFFORT_LADDER
 from ..js import Edit, Source
-from .base import GROUP_MODELS, GROUP_OUTPUT, Options, Outcome, Patch
+from .base import (
+    FOLD_NEVER,
+    FOLD_TIME,
+    FOLDS,
+    GROUP_MODELS,
+    GROUP_OUTPUT,
+    Options,
+    Outcome,
+    Patch,
+    string_setting,
+)
 
 # ------------------------------------------------------------------ grouping
 
@@ -178,6 +192,68 @@ def _reroute_grouping(source: Source, outcome: Outcome) -> Source:
     return source.apply(edits)
 
 
+#: What a message is timed by, as the grouping arm reads it.
+_TIMESTAMP = "timestamp"
+
+
+def _accounting(source: Source, outcome: Outcome, *, folds: bool) -> list[Edit]:
+    """Stop the group timing thinking it no longer holds.
+
+    The grouping arm accounts each block's think-time into the open group,
+    ``<group>.thoughtForMs += <time>``, just before the block -- routed out of
+    the group -- would have joined it. Left standing, the tool group before a
+    block read "Thought for 58s" for thinking drawn on its own row beside it.
+    So the sum goes (**group-time**) and the time is still worked out, for
+    ``folds`` to note under the block (**fold-note**, :func:`_noted`).
+
+    Found on its own, not through the arm `group-routing` identifies: the sum
+    is the bundle's one ``+=`` into ``thoughtForMs`` (:func:`js.only`), and the
+    block it times is the message its own block reads ``timestamp`` off, which
+    is the same object the arm goes on to route: one binding, however often it
+    is read, and one that means the same at the sum.
+    """
+    step = outcome.step("group-time")
+    sum_ = js.only(
+        [
+            read.parent
+            for node in source.find(_THINK_TIME)
+            if (read := js.up(node, "member_expression")) is not None
+            and read.child_by_field_name("property") == node
+            and read.parent is not None
+            and read.parent.type == "augmented_assignment_expression"
+            and read.parent.child_by_field_name("left") == read
+        ],
+        "sums into the group's think-time",
+    )
+    time = None if sum_ is None else sum_.child_by_field_name("right")
+    if sum_ is None or time is None:
+        return []
+    step.candidates += 1
+    shown = js.text(time)
+    if folds:
+        note = outcome.step("fold-note")
+        note.candidates += 1
+        timed = js.only(
+            list(
+                {
+                    frozenset(value.id for value in source.values(message)): message
+                    for n in js.every(
+                        js.up(sum_, "statement_block"),
+                        lambda n: js.reads(n, _TIMESTAMP),
+                        scoped=True,
+                    )
+                    if (message := js.receiver(n)) is not None
+                }.values()
+            ),
+            "messages the sum times",
+        )
+        if timed is not None and source.portable(timed, sum_):
+            shown = _noted(js.text(timed), shown)
+            note.applied += 1
+    step.applied += 1
+    return [Edit.replace(sum_, f"({shown})")]
+
+
 # ------------------------------------------------------------------ the arm
 
 _THINKING_LABEL = '"thinking"'
@@ -242,7 +318,468 @@ def _hidden(arm: js.Node, transcript: set[str]) -> list[js.Node]:
     return found
 
 
-def _thinking_inline(source: Source, _options: Options, outcome: Outcome) -> Source:
+#: What the arm hands its renderer the block as, and what the renderer takes
+#: it apart from.
+_PARAM = "param"
+_THINKING = "thinking"
+
+#: Where the thinking rows that have left the screen are remembered: by the
+#: block's ``signature``, which every finished thinking block carries and no
+#: live one does, so a live row -- each update is a row of its own, removed as
+#: the next arrives -- is never taken for a row that left. Strings, because a
+#: block is re-read from the transcript as often as it is drawn, and the
+#: running session is all it has to outlive.
+_FOLD = "globalThis.__ccThinkingFold"
+
+#: The note itself, made by whichever writer runs first: the signatures whose
+#: rows left, each block's think-time, and one fold gate per renderer
+#: (:func:`_gated`). The app context the gates read frames from is added to it
+#: where upstream names that context (:func:`_fold_frames`).
+_FOLD_STATE = "{left:new Set,ms:new Map,gates:new WeakMap}"
+
+#: The prop the gate hands the renderer its ref under, and the local the
+#: renderer binds it to: a name no minifier writes.
+_REF = "__ccFoldRef"
+
+#: The row's own box: the one the renderer hands its margin to.
+_ROW = "marginTop"
+
+#: The collapsed form is upstream's: dim, italic, every line run together.
+#: Folded, it is cut to one line, the way upstream draws its own one-line
+#: dim text.
+_ITALIC = "italic"
+_ONE_LINE = '"truncate-end"'
+
+
+#: The transcript list's own question of a row: may a click expand it? Folded
+#: tool calls answer yes, and the click toggles the row into its verbose view,
+#: which the thinking renderer draws whole.
+_CLICKABLE = "isItemClickable"
+
+
+def _clickable(test: str) -> str:
+    """Upstream's clickable test, with a folded thinking block answering yes too.
+
+    A thinking block is its own message, keyed for expansion by its own uuid,
+    so the click expands that block and nothing beside it; a second click folds
+    it again. Only a block that has left the screen answers: an open one has
+    nothing to expand, and a live one carries no signature.
+    """
+    return (
+        f'((clickable)=>(message)=>{{let block=message?.type==="assistant"'
+        f"?message.message?.content?.[0]:void 0;"
+        f'return block?.type==="thinking"&&!!{_FOLD}?.left.has(block.signature)'
+        f"||clickable(message)}})({test})"
+    )
+
+
+def _fold_click(source: Source, outcome: Outcome) -> list[Edit]:
+    """Let a click expand a folded block, the way it expands a folded tool call.
+
+    The transcript list is handed its clickable test under upstream's own name
+    (:data:`_CLICKABLE`), and that value is wrapped (:func:`_clickable`): the
+    click, the expanded set and the verbose redraw are all upstream's, so the
+    patch rides the path folded tool calls take rather than building one. Of
+    the bag *passed*, never the list's own pattern taking it apart.
+    """
+    step = outcome.step("fold-click")
+    handed = js.only(
+        [
+            value
+            for node in source.find(_CLICKABLE)
+            if (pair := js.named(node)) is not None
+            and pair.type == "pair"
+            and (value := pair.child_by_field_name("value")) is not None
+        ],
+        f"values handed as {_CLICKABLE}",
+    )
+    if handed is None:
+        return []
+    step.candidates += 1
+    step.applied += 1
+    return [Edit.replace(handed, _clickable(js.text(handed)))]
+
+
+def _thinking_of(
+    source: Source, scope: js.Node, block: js.Node
+) -> list[tuple[js.Node, js.Node]]:
+    """Each name this scope binds the ``thinking`` of ``block`` to, with the
+    value it is taken off.
+
+    ``block`` is the name a pattern binds the block to, and a pattern takes
+    ``thinking`` off it when the value it takes apart can be that binding
+    (:meth:`js.Source.values`), however the minifier spells either.
+    """
+    return [
+        (js.binding(js.props(pattern)[_THINKING]), value)
+        for pattern in js.every(scope, js.of_type("object_pattern"), scoped=True)
+        if _THINKING in js.props(pattern)
+        and pattern.parent is not None
+        and pattern.parent.type == "variable_declarator"
+        and (value := pattern.parent.child_by_field_name("value")) is not None
+        and block in source.values(value)
+    ]
+
+
+def _carries(
+    source: Source, value: js.Node | None, thought: list[js.Node], seen: set[int]
+) -> bool:
+    """Can this expression hand on the block's ``thinking``?
+
+    It can when one of the values it can stand for (:meth:`js.Source.values`,
+    names followed to what is written to them) is a binding of it, or a call
+    handed one: a helper that cleans the text hands back the text, and nothing
+    here models which calls do.
+    """
+    for candidate in source.values(value):
+        if candidate in thought:
+            return True
+        if candidate.type == "call_expression" and candidate.id not in seen:
+            seen.add(candidate.id)
+            if any(_carries(source, a, thought, seen) for a in js.arguments(candidate)):
+                return True
+    return False
+
+
+def _mentions(source: Source, node: js.Node | None, thought: list[js.Node]) -> bool:
+    """Does this expression read the block's ``thinking``, by any name?"""
+    seen: set[int] = set()
+    return (
+        js.first(
+            node,
+            lambda n: n.type == "identifier" and _carries(source, n, thought, seen),
+        )
+        is not None
+    )
+
+
+#: Where an element's row sits: its top summed up to the content of the
+#: nearest box that scrolls (``overflowY: "scroll"``), with that box, its
+#: content and the row's height -- upstream's own visibility walk, the one its
+#: dialogs and its visible-rows hook use. Nothing where there is no layout or
+#: no scrolling box (the classic renderer has none).
+_WHERE = (
+    "(node)=>{let y=0,at=node;for(;;){let parent=at?.parentNode,box=parent?.parentNode;"
+    "if(!at?.yogaNode||!parent?.yogaNode)return;y+=at.yogaNode.getComputedTop();"
+    'if(box?.yogaNode&&(box.style?.overflowY??box.style?.overflow)==="scroll")'
+    "return{box,content:parent,y,rows:node.yogaNode.getComputedHeight()};at=parent}}"
+)
+
+#: Has newer content pushed the row out of the last screen -- the bottom
+#: screenful of the content (its height, less the box's), which is what the
+#: screen shows at the bottom? A row on it stays open however far up you
+#: scroll: what folds a row is content arriving after it, never scrolling away
+#: from the end.
+_PUSHED = (
+    "({box,content,y,rows})=>rows>0&&"
+    "y+rows<=content.yogaNode.getComputedHeight()-box.yogaNode.getComputedHeight()"
+)
+
+#: Is a row wholly off the screen, given the offset the box scrolls by? The
+#: row's top within the box against the box's height.
+_OFF = (
+    "({box,content,y,rows},top)=>{let shown=content.yogaNode.getComputedTop()+y-top;"
+    "return shown+rows<=0||shown>=box.yogaNode.getComputedHeight()}"
+)
+
+#: Has a mounted row left for good, as a frame shows it? ``1`` is pushed out
+#: of the last screen and wholly off the screen at the offset the box last drew
+#: (``scrollTopRendered``). ``0`` is not. ``-1`` is not yet known: no layout,
+#: or a scroll still easing in or jumping to an element
+#: (``pendingScrollDelta``, ``scrollAnchor``) -- the two states in which
+#: upstream's transcript does not hold its view steady, so a fold then would
+#: move what is on screen.
+_PLACE = (
+    "(node)=>{let at=where(node),box=at?.box,top=box?.scrollTopRendered;"
+    'if(!at||typeof top!=="number"||box.pendingScrollDelta||box.scrollAnchor)return-1;'
+    "return pushed(at)&&off(at,top)?1:0}"
+)
+
+#: Did a row the transcript has just unloaded leave for good? Asked once the
+#: update that unloaded it has been laid out, of where the row sat before it.
+#: The scroll box must still be in the tree (its parents reach Ink's root): a
+#: box taken down with everything in it is a different screen, ctrl+o's or a
+#: dialog's, and says nothing about the row. Then the row must be pushed out
+#: of the last screen and off the screen the box now scrolls to -- the last
+#: screen itself while it sticks to the bottom, and its own offset and any
+#: scroll still easing in otherwise. Not while it jumps to an element, whose
+#: offset is not known yet.
+_GONE = (
+    "(at)=>{let{box,content}=at,root=box;while(root.parentNode)root=root.parentNode;"
+    'if(root.nodeName!=="ink-root"||!content.yogaNode||box.scrollAnchor||!pushed(at))'
+    "return!1;if(box.stickyScroll??!!box.attributes?.stickyScroll)return!0;"
+    "return off(at,(box.scrollTop??0)+(box.pendingScrollDelta??0))}"
+)
+
+
+def _gated(component: str, factory: str) -> str:
+    """The renderer, behind a gate that folds its block once the row has left
+    the screen for good.
+
+    The gate is a class component, so it needs nothing from React but the
+    class contract React has kept since its first release: a prototype marked
+    ``isReactComponent``, the ``updater`` React gives every instance, and the
+    ``contextType`` it reads a context through. The context is upstream's app
+    context (:func:`_fold_frames`), and from it the gate takes
+    ``subscribeFrames``, which upstream calls after every frame it draws -- a
+    scroll included -- so the check runs when the screen changes and never
+    otherwise. One gate class per renderer, made the first time it draws.
+
+    The gate draws the renderer as the arm asked, with transcript presentation
+    while the block is open, and hands it a ref (:data:`_REF`) for its row. A
+    finished block whose row a settled frame shows has left (:data:`_PLACE`)
+    folds in two commits. The first draws nothing new: every commit has Ink
+    measure the screen and upstream's transcript re-anchor its view on the row
+    now at its top -- which a row wholly off the screen cannot be. The second,
+    from ``componentDidUpdate``, notes the block as left and draws it folded,
+    and the transcript, finding its anchor moved up by the rows the fold took,
+    scrolls by as much before the frame is drawn: a block folding above the
+    screen does not move what is on it. A live block has no signature yet and
+    is not watched.
+
+    A frame can miss a row. Output that lands in one update -- a long reply
+    arriving whole -- pushes a block past the transcript's mounted window in
+    the same update that unloads it, so no frame ever draws it off the screen.
+    So a gate being unmounted notes where its row sat, and once that update
+    has been laid out asks whether it left for good (:data:`_GONE`). Folding
+    an unloaded row moves nothing on screen, so this needs no settled frame.
+    """
+    return (
+        f"((type,jsx)=>{{let fold={_FOLD}??={_FOLD_STATE},gate=fold.gates.get(type);"
+        f"if(!gate){{let where={_WHERE},pushed={_PUSHED},off={_OFF},"
+        f"place={_PLACE},gone={_GONE};"
+        f"gate=function(){{this.foldNode=null;this.foldRef=(node)=>{{this.foldNode=node}}}};"
+        f"Object.assign(gate.prototype,{{isReactComponent:{{}},"
+        f"componentDidMount(){{this.foldWatch()}},"
+        f"componentDidUpdate(){{let s=this.foldArmed;if(s){{this.foldArmed=void 0;"
+        f"fold.left.add(s);this.updater.enqueueForceUpdate(this,null);return}}"
+        f"this.foldWatch()}},"
+        f"componentWillUnmount(){{this.foldStop?.();this.foldStop=void 0;"
+        f"let s=this.foldArmed??this.props.param?.signature;"
+        f'if(typeof s!=="string"||!s||fold.left.has(s))return;'
+        f"if(this.foldArmed){{fold.left.add(s);return}}"
+        f"let at=where(this.foldNode);"
+        f"if(at)queueMicrotask(()=>{{try{{if(gone(at))fold.left.add(s)}}catch{{}}}})}},"
+        f"foldWatch(){{let s=this.props.param?.signature;"
+        f'if(this.foldStop||typeof s!=="string"||!s||fold.left.has(s))return;'
+        f"this.foldStop=this.context?.subscribeFrames?.(()=>{{try{{"
+        f"let s=this.props.param?.signature;"
+        f'if(typeof s!=="string"||!s||!fold.left.has(s)&&place(this.foldNode)!==1)return;'
+        f"this.foldStop?.();this.foldStop=void 0;if(!fold.left.has(s))this.foldArmed=s;"
+        f"this.updater.enqueueForceUpdate(this,null)}}catch{{}}}})}},"
+        f"render(){{let p=this.props;return jsx(type,{{...p,isTranscriptMode:"
+        f"p.isTranscriptMode||!fold.left.has(p.param?.signature),{_REF}:this.foldRef}})}}}});"
+        f"fold.gates.set(type,gate)}}"
+        f"gate.contextType??=fold.app;return gate}})({component},{factory})"
+    )
+
+
+#: Upstream's app context, by the name it gives it, and the frame subscription
+#: the gate reads off it.
+_APP = '"InternalAppContext"'
+_FRAMES = "subscribeFrames"
+
+
+def _fold_frames(source: Source, outcome: Outcome) -> list[Edit]:
+    """Leave upstream's app context where the fold gates can read it.
+
+    The context is the object upstream names ``"InternalAppContext"`` (its
+    ``displayName``, the bundle's one), and it is the one whose default value
+    carries ``subscribeFrames``; both are asked. It lives in the renderer's
+    module of Ink, not the thinking renderer's, so it is noted beside the fold
+    (:data:`_FOLD`) where it is named, as the module loads.
+    """
+    step = outcome.step("fold-frames")
+    named_ = js.only(
+        [
+            assignment
+            for node in source.find(_APP)
+            if node.type == "string"
+            and (assignment := node.parent) is not None
+            and assignment.type == "assignment_expression"
+            and assignment.child_by_field_name("right") == node
+            and js.reads(assignment.child_by_field_name("left"), "displayName")
+        ],
+        f"contexts named {_APP}",
+    )
+    if named_ is None:
+        return []
+    step.candidates += 1
+    context = js.receiver(named_.child_by_field_name("left"))
+    if context is None or context.type != "identifier":
+        return []
+    made = list(source.values(context))
+    statement = named_.parent
+    if (
+        len(made) != 1
+        or made[0].type != "call_expression"
+        or _FRAMES not in js.call_props(made[0])
+        or statement is None
+        or statement.type not in ("expression_statement", "sequence_expression")
+    ):
+        return []
+    step.applied += 1
+    return [Edit.after(named_, f",({_FOLD}??={_FOLD_STATE}).app={js.text(context)}")]
+
+
+def _noted(entry: str, time: str) -> str:
+    """The think-time, handed on unchanged after two things are noted under the
+    entry's block.
+
+    Its time, for the folded row to say (:func:`_thought`): upstream's own
+    figure, cap and all, which the group never shows once its thinking is
+    routed out. And, for a block older than this session -- a resumed one --
+    that its row has already left the screen, so it opens folded, as a tool
+    group does, and only thinking that arrives while you watch starts open. The
+    session's age is the process's own (``performance.timeOrigin``), against
+    the message's own timestamp. A live entry has no signature yet and is not
+    noted.
+    """
+    return (
+        f"((entry,time)=>{{let s=entry?.message?.content?.[0]?.signature;"
+        f'if(typeof s==="string"&&s){{let fold={_FOLD}??={_FOLD_STATE};'
+        f"fold.ms.set(s,time);"
+        f"if(Date.parse(entry.timestamp)<performance.timeOrigin)fold.left.add(s)}}"
+        f"return time}})({entry},{time})"
+    )
+
+
+def _thought(block: str) -> str:
+    """What a folded block says: how long it was thought for, in whole seconds
+    as upstream's spinner words it, or just that it was, with no time noted."""
+    return (
+        f'((time)=>time>0?"Thought for "+Math.max(1,Math.round(time/1000))+"s"'
+        f':"Thought")({_FOLD}?.ms?.get({block}?.signature))'
+    )
+
+
+def _renderers(source: Source) -> list[js.Node]:
+    """Every thinking renderer: a function taking a block (``param``) and the
+    ``isTranscriptMode`` flag, which then reads ``thinking`` off that block.
+
+    Found on its own, not through the arm `renderer-props` identifies: ten
+    functions take both props on 2.1.314, and one of them takes a thinking
+    block apart.
+    """
+    found: dict[int, js.Node] = {}
+    for node in source.find(_TRANSCRIPT):
+        pattern = js.up(node, "object_pattern")
+        if pattern is None or _PARAM not in js.props(pattern):
+            continue
+        renderer = js.climb(pattern, js.of_type(*js.FUNCTIONS))
+        block = js.binding(js.props(pattern)[_PARAM])
+        if renderer is not None and _thinking_of(source, renderer, block):
+            found[renderer.id] = renderer
+    return list(found.values())
+
+
+def _folding(
+    source: Source, renderer: js.Node, outcome: Outcome, *, timed: bool
+) -> list[Edit]:
+    """A thinking renderer (:func:`_renderers`), taught to hand over and to
+    fold its row. Two edits:
+
+    * **fold-ref** -- the renderer binds the ref its gate hands it
+      (:data:`_REF`) beside the block it takes apart (``param``), and its row's
+      box (:data:`_ROW`) takes it, so the gate can measure the row. A box that
+      already has a ref is upstream's to keep, and is reported as found and
+      left.
+    * **fold-line** -- the collapsed text, the italic bag whose children read
+      the block's ``thinking`` (followed through what its names are bound
+      to, :func:`_mentions`), keeps to one line: upstream's own collapsed thinking,
+      the start of the block, or with ``timed`` how long it was thought for
+      instead (:func:`_thought`) -- "∴ Thought for 12s". Either reads apart at
+      a glance from the tool groups around it.
+    """
+    ref, line = outcome.step("fold-ref"), outcome.step("fold-line")
+    edits: list[Edit] = []
+    param = js.only(
+        [
+            (js.binding(js.props(pattern)[_PARAM]), pattern)
+            for pattern in js.every(renderer, js.of_type("object_pattern"), scoped=True)
+            if _PARAM in js.props(pattern)
+            and pattern.parent is not None
+            and pattern.parent.type == "variable_declarator"
+        ],
+        f"bindings of {_PARAM}",
+    )
+    if param is None:
+        return edits
+    block, taken = param
+    declarator = taken.parent
+    if declarator is None:
+        return edits
+    taken_off = _thinking_of(source, renderer, block)
+    thought = [binding for binding, _ in taken_off]
+    bags = js.every(renderer, js.of_type("object"), scoped=True)
+
+    row = js.only([b for b in bags if _ROW in js.props(b)], "row boxes")
+    if row is not None:
+        ref.candidates += 1
+        if (
+            "ref" not in js.props(row)
+            and _REF not in js.props(taken)
+            and js.visible(declarator, row)
+        ):
+            # First in the pattern: a rest element, if upstream adds one, has
+            # to stay last.
+            edits.append(Edit.before(js.children(taken)[0], f"{_REF},"))
+            edits.append(Edit.after(js.children(row)[-1], f",ref:{_REF}"))
+            ref.applied += 1
+
+    collapsed = js.only(
+        [
+            b
+            for b in bags
+            if _ITALIC in js.props(b)
+            and _mentions(source, js.props(b).get("children"), thought)
+        ],
+        "collapsed thinking texts",
+    )
+    if collapsed is not None:
+        line.candidates += 1
+        shown = js.props(collapsed)
+        if timed:
+            # The block as the renderer reads it there, by a name that means
+            # the block where the time is drawn.
+            read = next(
+                (
+                    value
+                    for _, value in taken_off
+                    if value.type == "identifier"
+                    and source.portable(value, shown["children"])
+                ),
+                None,
+            )
+            if read is None:
+                return edits
+            edits.append(Edit.replace(shown["children"], _thought(js.text(read))))
+        wrap = shown.get("wrap")
+        if wrap is None:
+            edits.append(Edit.before(js.children(collapsed)[0], f"wrap:{_ONE_LINE},"))
+        elif js.text(wrap) != _ONE_LINE:
+            edits.append(Edit.replace(wrap, _ONE_LINE))
+        line.applied += 1
+    return edits
+
+
+def _drawing(bag: js.Node) -> tuple[js.Node, js.Node] | None:
+    """The factory and component a props bag is drawn with, ``f(C, bag)``.
+
+    Every render here is a component and a bag (:func:`js.call_props`); this
+    is the same call read the other way, from the bag out to what receives it.
+    """
+    call = None if bag.parent is None else bag.parent.parent
+    if call is None or call.type != "call_expression":
+        return None
+    factory = call.child_by_field_name("function")
+    handed = js.arguments(call)
+    if factory is None or len(handed) < 2 or handed[1] != bag:
+        return None
+    return factory, handed[0]
+
+
+def _thinking_inline(source: Source, options: Options, outcome: Outcome) -> Source:
     """Route thinking past the collapse machinery and render it expanded.
 
     One rewrite in the activity-group builder (see :func:`_reroute_grouping`),
@@ -254,12 +791,42 @@ def _thinking_inline(source: Source, _options: Options, outcome: Outcome) -> Sou
     The flag the arm hands its renderer is what ties the two together: it is
     the value forced to ``!0`` here and the name the early return is keyed on
     there, so neither rewrite is looking for a gate the other cannot see.
+
+    Folding once off screen (``inline_fold``, to the block's thought time or
+    to its first line) draws it instead through a gate (:func:`_gated`) that
+    forces transcript presentation only while the block has not left the
+    screen -- the real transcript view still draws it whole -- and watches each
+    frame for the row leaving it, reading frames off upstream's app context
+    (:func:`_fold_frames`). It also notes each block's time and age where the
+    grouping accounts it (:func:`_noted`), teaches the renderer to hand over its
+    row and to fold to one line (:func:`_folding`), and lets a click expand a
+    folded block (:func:`_fold_click`): five more steps, declared under the same
+    condition they run.
     """
-    outcome.declare(required=("group-routing", "null-guard", "renderer-props"))
+    folds = options.inline_fold != FOLD_NEVER
+    timed = options.inline_fold == FOLD_TIME
+    outcome.declare(
+        required=(
+            "group-routing",
+            "group-time",
+            "null-guard",
+            "renderer-props",
+            *(
+                ("fold-note", "fold-frames", "fold-ref", "fold-line", "fold-click")
+                if folds
+                else ()
+            ),
+        )
+    )
     guard = outcome.step("null-guard")
     props = outcome.step("renderer-props")
     source = _reroute_grouping(source, outcome)
-    edits: list[Edit] = []
+    edits = _accounting(source, outcome, folds=folds)
+    if folds:
+        edits += _fold_frames(source, outcome)
+        edits += _fold_click(source, outcome)
+        for renderer in _renderers(source):
+            edits += _folding(source, renderer, outcome, timed=timed)
 
     for node in source.find(_THINKING_LABEL):
         arm = js.up(node, "switch_case")
@@ -292,8 +859,16 @@ def _thinking_inline(source: Source, _options: Options, outcome: Outcome) -> Sou
             edits.append(Edit.replace(answer, b";"))
 
         for obj in drawn:
-            forced = {_TRANSCRIPT: b"!0", _HIDE_IN_TRANSCRIPT: b"!1"}
             carried = js.props(obj)
+            # Folding, the block's own bag is drawn through the gate, which
+            # hands the renderer transcript presentation while the block is
+            # open; the flag the arm passes stays the arm's, so the real
+            # transcript view still draws it whole.
+            gated = folds and _PARAM in carried
+            drawing = _drawing(obj) if gated else None
+            forced = {_HIDE_IN_TRANSCRIPT: b"!1"}
+            if not gated:
+                forced[_TRANSCRIPT] = b"!0"
             landed = False
             for name, wanted in forced.items():
                 value = carried.get(name)
@@ -301,8 +876,15 @@ def _thinking_inline(source: Source, _options: Options, outcome: Outcome) -> Sou
                     continue
                 edits.append(Edit.replace(value, wanted))
                 landed = True
+            if drawing is not None:
+                factory, component = drawing
+                edits.append(
+                    Edit.replace(
+                        component, _gated(js.text(component), js.text(factory))
+                    )
+                )
             props.candidates += 1
-            props.applied += landed
+            props.applied += (drawing is not None) if gated else landed
 
     return source.apply(edits)
 
@@ -520,6 +1102,9 @@ PATCHES = [
         group=GROUP_OUTPUT,
         fn=_thinking_inline,
         anchors=(_THINKING_LABEL, _TRANSCRIPT, _SUMMARY, _THINK_TIME),
+        setting=string_setting(
+            "inline_fold", "inline_fold", FOLD_NEVER, choices=tuple(FOLDS)
+        ),
     ),
     Patch(
         id="max-effort",

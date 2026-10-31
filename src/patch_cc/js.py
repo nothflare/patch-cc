@@ -954,10 +954,12 @@ def visible(declarator: Node, site: Node) -> bool:
     with it.
 
     Position is asked for exactly one shape and no other: a *direct* read of a
-    block-scoped binding, in the same execution scope, *before* the declaration
+    block-scoped binding, in the same execution scope, *before* its declarator
     runs. That is the temporal dead zone -- it parses, verifies, and throws at
     run time -- so it is the same class of damage as an out-of-scope name and
-    the same one no other gate catches. Everything else keeps position out of
+    the same one no other gate catches. The declarator, not the statement:
+    ``let a=f(),b=a`` reads ``a`` once it is bound, and a minifier fuses a
+    component's locals into one such ``let``. Everything else keeps position out of
     it, because everything else is safe regardless of order: a closure written
     above a `let` reads it once invoked (bundle order is the bundler's, and
     selecting a site by "falls after the declaration" looks like a scope proof
@@ -989,7 +991,7 @@ def visible(declarator: Node, site: Node) -> bool:
     same_scope = (site_fn.start_byte if site_fn else -1) == (
         decl_fn.start_byte if decl_fn else -1
     )
-    return declaration.end_byte <= site.start_byte if same_scope else True
+    return declarator.end_byte <= site.start_byte if same_scope else True
 
 
 # ----------------------------------------------------------------- bindings

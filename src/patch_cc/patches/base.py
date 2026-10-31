@@ -40,6 +40,22 @@ DEFAULT_BRAND = "Claude Code"
 #: Default --version marker text.
 DEFAULT_SUFFIX = "(patched)"
 
+#: Whether `thinking-inline` folds a thinking block once its row has left the
+#: screen, and what the folded line says: how long it was thought for
+#: ("∴ Thought for 12s"), or the start of the thinking itself, cut to one line.
+#: Or it leaves the block open, as it always has (the default, so a replay
+#: bakes what it baked before).
+FOLD_NEVER = "never"
+FOLD_TIME = "thought-time"
+FOLD_FIRST_LINE = "first-line"
+
+#: Each fold, with the words the menu and the report show it by.
+FOLDS = {
+    FOLD_NEVER: "Stays open",
+    FOLD_TIME: "Auto fold · thought for Ns",
+    FOLD_FIRST_LINE: "Auto fold · first line",
+}
+
 
 def derived_brand() -> str:
     """The branding default: the system username, possessive.
@@ -76,6 +92,8 @@ class Options:
     #: segment -- not "unset": whether the patch acts at all is the selection's
     #: question, never this field's.
     org_label: str = ""
+    #: Whether an inline thinking block folds once off screen (:data:`FOLDS`).
+    inline_fold: str = FOLD_NEVER
 
     @property
     def rebrands(self) -> bool:
@@ -311,7 +329,12 @@ class Setting:
 
 
 def string_setting(
-    key: str, field: str, default: str, *, always: bool = False
+    key: str,
+    field: str,
+    default: str,
+    *,
+    always: bool = False,
+    choices: tuple[str, ...] = (),
 ) -> Setting:
     """A :class:`Setting` for a plain string value.
 
@@ -319,10 +342,18 @@ def string_setting(
     default: ``brand``, ``version_suffix`` (``suffix``) and ``org_label``.
     ``always`` records even the empty value -- an emptied ``org-label`` *means*
     "hide the segment", so unlike a blank brand it is a real recorded choice.
+    ``choices`` names the only values there are (``inline_fold``): anything
+    else read back, a hand-edited file's or an older tool's, is the default.
     """
 
     def parse(value: object) -> str:
-        return value if isinstance(value, str) and (value or always) else default
+        return (
+            value
+            if isinstance(value, str)
+            and (value or always)
+            and (not choices or value in choices)
+            else default
+        )
 
     def write(options: Options) -> str:
         return getattr(options, field)

@@ -27,7 +27,7 @@ from .bun import Bundle, container
 from .bun.errors import BunError
 from .custom_models import CustomModel
 from .patcher import build_manifest, landed_ids, read_manifest
-from .patches import ALL_PATCHES, Options, Outcome, Patch
+from .patches import ALL_PATCHES, FOLD_TIME, Options, Outcome, Patch
 from .patches.agents import (
     INHERIT,
     BuiltinAgent,
@@ -170,6 +170,9 @@ def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options
         # The replace branch; the hidden form differs only in the emitted tail,
         # so one configuration holds the whole matcher in the net.
         org_label="patch-cc doctor",
+        # Every edit: a block that stays open runs none of the fold steps, and
+        # the first-line fold is the time fold less its label.
+        inline_fold=FOLD_TIME,
     )
 
 

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from rich.console import Console
 
 from .custom_models import loopback
-from .patches.base import Options, Outcome, Patch
+from .patches.base import FOLDS, Options, Outcome, Patch
 
 if TYPE_CHECKING:
     from .doctor import DryRun, Smoke
@@ -129,8 +129,9 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
 def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | None:
     """The value a configurable patch actually wrote, for the report line.
 
-    Branding, the version marker, model overrides, and the chosen custom models
-    each carry a chosen value; a plain toggle patch carries none. One source so
+    Branding, the version marker, model overrides, the chosen custom models and
+    the thinking fold each carry a chosen value; a plain toggle patch carries
+    none. One source so
     the CLI and the menu report the same thing after an apply.
 
     Gated on ``health``, not ``applied`` alone: a ``broken`` patch is dropped
@@ -148,6 +149,8 @@ def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | Non
         return options.version_suffix
     if patch.id == "org-label":
         return options.org_label or "hidden"
+    if patch.id == "thinking-inline":
+        return FOLDS[options.inline_fold]
     if patch.id == "subagent-models" and options.subagent_models:
         return ", ".join(f"{a}={m}" for a, m in options.subagent_models.items())
     if patch.id == "custom-models" and options.custom_models:

@@ -29,7 +29,7 @@ uvx --no-cache patch-cc        # fullscreen menu, no install needed
 
 The menu is a single centered panel: move with `↑ ↓`, toggle with `space`,
 press `s` to apply. Patches that carry a setting — subagent models, custom models,
-the startup name, the `--version` marker, the org/email label — open a centered
+the thinking fold, the startup name, the `--version` marker, the org/email label — open a centered
 modal on `enter`, and the row then shows what you chose. Everything choosable
 is a picker: the agent names and model aliases are **discovered from your
 binary itself** (and custom models from your endpoint, with manual entry available), so the menu can never
@@ -53,7 +53,7 @@ patch-cc                       # then just run it
 | Output & display | Detailed tool calls | Show full read/search calls, not collapsed summaries |
 | | Colour new files as diffs | Created files render with `+` lines and green |
 | | Fix blank thinking blocks | Opt out of the server-side experiment that can empty every thinking block |
-| | Always show thinking | Thinking blocks stay inline — no `ctrl+o` |
+| | Always show thinking | Thinking blocks stay inline — no `ctrl+o`. On `enter`, choose whether a block folds once newer output pushes it off screen (fullscreen renderer; the last screen stays open), to `∴ Thought for 12s` or to its first line; click a folded block to expand it, as with folded tool calls |
 | | Stream thinking live | See reasoning as it is generated, inline and in order |
 | | Show subagent prompts | Prompt blocks visible during normal use |
 | Models & effort | Persist max effort | `/effort max` saves as your default for new sessions, like the other levels |
