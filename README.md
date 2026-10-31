@@ -52,6 +52,7 @@ patch-cc                       # then just run it
 |---|---|---|
 | Output & display | Detailed tool calls | Show full read/search calls, not collapsed summaries |
 | | Colour new files as diffs | Created files render with `+` lines and green |
+| | Tool call icon | Done tool groups (`Read 1 file, ran 1 shell command`) get a ⚙ where other rows draw their glyph |
 | | Fix blank thinking blocks | Opt out of the server-side experiment that can empty every thinking block |
 | | Always show thinking | Thinking blocks stay inline — no `ctrl+o`. On `enter`, choose whether a block folds once newer output pushes it off screen (fullscreen renderer; the last screen stays open), to `∴ Thought for 12s` or to its first line; click a folded block to expand it, as with folded tool calls |
 | | Stream thinking live | See reasoning as it is generated, inline and in order |

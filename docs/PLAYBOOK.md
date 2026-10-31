@@ -735,6 +735,21 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   resume, plain/workshop/scratchpad files): every reachable path drew the
   diff.
 
+- **`tool-icon`** — draw ⚙ in a done tool group's leading slot. The group
+  header's first column is a ternary: the running status dot (the call handed
+  `isUnresolved`) or, once the group is done, a box handed only its two
+  columns — the slot every other row fills with its glyph (`∴`, `✻`, `※`),
+  left empty here. The slot is identified by both branches, and filled only
+  when it is empty: upstream's own tool row draws a glyph in the same kind of
+  slot, and that one is its to keep. The glyph goes in upstream's own shape
+  for a glyph there — a dim, `aria-hidden` text in the box — built with the
+  slot's own element call and the header's own text component, the element
+  upstream keys `"ellipsis"`, so neither the JSX runtime nor a text component
+  is named, and only where both mean the same in the slot (`source.portable`).
+  Every such slot is filled, each proven by both branches.
+  **Alive by eye:** ask for a tool call or two; the finished group reads
+  `⚙ Read 1 file, ran 1 shell command`, in the column the other glyphs share.
+
 ### Thinking — `thinking.py`
 
 - **`thinking-summaries`** — stop echoing the account's server-side experiment

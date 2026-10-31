@@ -1,4 +1,4 @@
-"""Tool-call and diff rendering patches."""
+"""Tool-call and diff rendering patches, and the icon done tool groups draw."""
 
 from __future__ import annotations
 
@@ -223,6 +223,89 @@ def _create_diff_colors(source: Source, _options: Options, outcome: Outcome) -> 
     return source.apply(edits)
 
 
+# --------------------------------------------------------------- tool icon
+
+#: The status dot a running tool group draws in its header's leading slot --
+#: upstream's own prop name, and the branch that says which slot this is.
+_UNRESOLVED = "isUnresolved"
+
+#: The slot: a box given two columns, where every other row draws its glyph
+#: (``∴`` thinking, ``✻`` the turn's duration, ``※`` a recap). A done tool
+#: group's is left empty.
+_SLOT = "minWidth"
+
+#: The header's own text element, keyed by upstream: what the glyph is drawn
+#: with, so no text component is spelled.
+_ELLIPSIS_KEY = '"ellipsis"'
+
+#: ⚙, written as the escape Bun writes non-ASCII as.
+_GEAR = '"\\u2699"'
+
+
+def _branch_bag(branch: js.Node | None) -> js.Node | None:
+    """The props bag a branch's call hands over, if the branch is a call."""
+    if branch is None or branch.type != "call_expression":
+        return None
+    return next((a for a in js.arguments(branch) if a.type == "object"), None)
+
+
+def _tool_icon(source: Source, _options: Options, outcome: Outcome) -> Source:
+    """Draw ⚙ in a done tool group's empty leading slot.
+
+    The slot is found by the ternary that fills it: one branch the running
+    status dot (the call handed ``isUnresolved``), the other a box handed only
+    its two columns. A slot that already holds something is upstream's to keep
+    -- its own tool row draws a glyph there -- so only the empty one is filled,
+    and in upstream's own shape for a glyph in that slot: a dim text in the box,
+    built with the slot's own element call and the header's own text component
+    (the element keyed ``"ellipsis"``), so neither is named here, and only
+    where both mean the same in the slot (:meth:`js.Source.portable`). Every
+    such slot is filled: each is proven by both branches.
+    """
+    edits: list[Edit] = []
+    for node in source.find(_UNRESOLVED):
+        pair = js.named(node)
+        if pair is None or pair.type != "pair" or pair.parent is None:
+            continue
+        handed = pair.parent.parent
+        dot = (
+            handed.parent if handed is not None and handed.type == "arguments" else None
+        )
+        choice = dot.parent if dot is not None else None
+        if choice is None or choice.type != "ternary_expression":
+            continue
+        branches = [
+            choice.child_by_field_name("consequence"),
+            choice.child_by_field_name("alternative"),
+        ]
+        slot = next((b for b in branches if b != dot), None)
+        bag = _branch_bag(slot)
+        if bag is None or slot is None or set(js.props(bag)) != {_SLOT}:
+            continue
+        outcome.candidates += 1
+        component = js.climb(choice, js.of_type(*js.FUNCTIONS))
+        text = js.only(
+            [
+                args[0]
+                for call in js.every(component, js.of_type("call_expression"))
+                if (args := js.arguments(call))
+                and js.text(args[-1]) == _ELLIPSIS_KEY
+                and args[0].type == "identifier"
+            ],
+            "elements keyed as the header's ellipsis",
+        )
+        element = slot.child_by_field_name("function")
+        if text is None or not all(source.portable(n, bag) for n in (element, text)):
+            continue
+        glyph = (
+            f"{js.text(element)}({js.text(text)},"
+            f'{{"aria-hidden":!0,dimColor:!0,children:{_GEAR}}})'
+        )
+        edits.append(Edit.before(js.children(bag)[0], f"children:{glyph},"))
+        outcome.applied += 1
+    return source.apply(edits)
+
+
 PATCHES = [
     Patch(
         id="tool-calls",
@@ -237,5 +320,13 @@ PATCHES = [
         group=GROUP_OUTPUT,
         fn=_create_diff_colors,
         anchors=(_CREATE, _UPDATE, "structuredPatch:"),
+    ),
+    Patch(
+        id="tool-icon",
+        title="Tool call icon",
+        group=GROUP_OUTPUT,
+        fn=_tool_icon,
+        default=False,
+        anchors=(_UNRESOLVED, _ELLIPSIS_KEY),
     ),
 ]
